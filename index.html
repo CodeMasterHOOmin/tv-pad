@@ -1,4 +1,1024 @@
-﻿<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>TV Pad</title><style>html,body{margin:0;height:100%;background:#000;color:#555;font:16px -apple-system,sans-serif;display:grid;place-items:center}</style>
-</head><body>TV Pad is being set up.</body></html>
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="apple-mobile-web-app-title" content="TV Pad">
+<meta name="theme-color" content="#000000">
+<meta name="referrer" content="no-referrer">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src https://ntfy.sh wss://broker.emqx.io:8084 wss://broker.hivemq.com:8884; img-src 'self'; base-uri 'none'; form-action 'none'">
+<link rel="apple-touch-icon" href="icon.png">
+<title>TV Pad</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent;
+      -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+  html, body { height: 100%; background: #000; overflow: hidden; overscroll-behavior: none; }
+  body { position: fixed; inset: 0; touch-action: none;
+         font: 600 22px/1.2 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: #fff; }
+
+  /* Mode 1: six invisible buttons. Labels only show in the intro and as a faint flash on tap. */
+  #pad { position: absolute; inset: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+         display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: repeat(3, 1fr); }
+  body:not([data-mode="buttons"]) #pad { display: none; }
+  .zone { position: relative; display: flex; align-items: center; justify-content: center; }
+  .zone span { opacity: 0; transition: opacity .35s; color: rgba(255,255,255,.55); letter-spacing: .3px; }
+  .zone::after { content: ""; position: absolute; inset: 10px; border-radius: 22px; background: #19b3a6;
+                 opacity: 0; transition: opacity .35s; }
+  .zone.hit::after { opacity: .12; transition: opacity 0s; }
+  .zone.hit span, body.intro .zone span { opacity: 1; transition: opacity 0s; }
+  body.intro .zone::after { opacity: .06; border: 1px solid rgba(255,255,255,.12); }
+  .zone.err::after { background: #e5484d; opacity: .25; transition: opacity 0s; }
+  #hub { position: absolute; left: 50%; top: 50%; width: 140px; height: 140px; margin: -70px 0 0 -70px;
+         border-radius: 50%; border: 1px solid transparent; transition: border-color .6s; pointer-events: none; }
+  body.intro #hub { border-color: rgba(25,179,166,.28); transition: none; }
+
+  /* Canvases never take touches: one document-level handler routes every pointer by mode. */
+  canvas { position: fixed; left: 0; top: 0; width: 100%; height: 100%; pointer-events: none; }
+  #ink { display: none; }
+  body[data-mode="draw"] #ink { display: block; }
+
+  /* Mode 4: one line of text, centred in whatever is visible above the keyboard (--vt / --vh). */
+  #msgbox { display: none; position: fixed; left: 0; right: 0; padding: 0 22px;
+            top: calc(var(--vt, 0px) + var(--vh, 100vh) * .42); transform: translateY(-50%); }
+  body[data-mode="message"] #msgbox { display: block; }
+  #msg { display: block; width: 100%; max-width: 640px; margin: 0 auto; padding: 12px 4px;
+         background: #000; color: #fff; border: 0; border-bottom: 1px solid rgba(255,255,255,.14); border-radius: 0;
+         outline: none; font: 500 24px/1.3 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+         text-align: center; caret-color: #19b3a6; -webkit-appearance: none; appearance: none;
+         -webkit-user-select: text; user-select: text; -webkit-touch-callout: default; touch-action: manipulation;
+         transition: border-color .3s; }
+  #msg:focus { border-bottom-color: rgba(25,179,166,.55); }
+  #msg::placeholder { color: rgba(255,255,255,.2); }
+  #count { height: 18px; margin-top: 8px; text-align: center; font-size: 13px; font-weight: 500; color: rgba(255,255,255,.3); }
+  #ghost { position: absolute; left: 22px; right: 22px; top: 12px; text-align: center; white-space: nowrap; overflow: hidden;
+           text-overflow: ellipsis; font: 500 24px/1.3 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+           color: #bff5ef; opacity: 0; pointer-events: none; }
+  #ghost.fly { animation: fly .75s ease-out forwards; }
+  @keyframes fly { from { opacity: .95; transform: translateY(0); } to { opacity: 0; transform: translateY(-46px); } }
+
+  #hint, #note { position: fixed; left: 0; right: 0; text-align: center; font-size: 13px; font-weight: 500;
+                 opacity: 0; transition: opacity .4s; pointer-events: none; }
+  #hint { top: calc(var(--vt, 0px) + var(--vh, 100vh) - 86px); color: rgba(255,255,255,.28); }
+  #note { top: calc(var(--vt, 0px) + var(--vh, 100vh) - 56px); color: rgba(255,255,255,.45); }
+  #hint.show, #note.show { opacity: 1; }
+</style>
+</head>
+<body class="intro" data-mode="buttons">
+<div id="pad">
+  <div class="zone" data-cmd="vol_up" data-repeat><span>Vol +</span></div>
+  <div class="zone" data-cmd="play"><span>Play</span></div>
+  <div class="zone" data-cmd="vol_down" data-repeat><span>Vol −</span></div>
+  <div class="zone" data-cmd="pause"><span>Pause</span></div>
+  <div class="zone" data-cmd="back"><span>Back</span></div>
+  <div class="zone" data-cmd="home"><span>Home</span></div>
+  <div id="hub"></div>
+</div>
+<canvas id="ink"></canvas>
+<canvas id="fx"></canvas>
+<div id="msgbox">
+  <input id="msg" type="text" maxlength="280" enterkeyhint="send" autocomplete="off" autocorrect="on"
+         autocapitalize="sentences" spellcheck="true" placeholder="Message to TV" aria-label="Message to show on the TV">
+  <div id="ghost"></div>
+  <div id="count"></div>
+</div>
+<div id="hint">Tap to enable shake &amp; tilt</div>
+<div id="note"></div>
+
+<script>
+'use strict';
+// TV Pad v2 (contract: tv-tools\glass-home\remote\PROTOCOL.md).
+// Pairing lives only in the URL fragment (#p=<topic>~<key>), which browsers never send to any server.
+// Every message is AES-256-GCM sealed here, with the topic as associated data, before it leaves the phone.
+// The phone only ever makes outgoing connections: an MQTT publisher over WebSocket, ntfy POST as a fallback.
+
+const BROKERS = ['wss://broker.emqx.io:8084/mqtt', 'wss://broker.hivemq.com:8884/mqtt'];
+const RELAY = 'https://ntfy.sh/';
+const MAX_BODY = 4096, MAX_TEXT = 280;
+const PALETTE = ['#19B3A6', '#FFFFFF', '#FF3B30', '#FFD60A', '#0A84FF', '#BF5AF2'];
+const STROKE_W = 2;                       // thick (14 px at 1080p): finger drawings read better across a room
+const HOLD_MS = 4000, HOLD_SLOP = 12;     // hold-still-to-switch, everywhere
+const TAP_MS = 250, DOUBLE_MS = 300;
+const DEAD = 18, RADIUS = 80;             // stick
+const FLICK_PX = 140, FLICK_MS = 220, FLICK_SPEED = 0.45;   // px/ms average that still "looks like a flick"
+const BATCH_MS = 40, BATCH_PTS = 48;
+
+const enc = new TextEncoder();
+const $ = id => document.getElementById(id);
+const body = document.body, note = $('note'), hintEl = $('hint'), hubEl = $('hub');
+const msgEl = $('msg'), countEl = $('count'), ghostEl = $('ghost');
+const inkCv = $('ink'), fxCv = $('fx'), ink = inkCv.getContext('2d'), fx = fxCv.getContext('2d');
+
+let topic = null, cryptoKey = null, topicBytes = null;
+let mode = 'buttons';
+let dpr = 1;
+
+// ---------- small helpers ----------
+const rand = n => crypto.getRandomValues(new Uint8Array(n));
+const clamp = (v, lo, hi) => v < lo ? lo : v > hi ? hi : v;
+function b64url(bytes) {
+  let s = '';
+  bytes.forEach(b => { s += String.fromCharCode(b); });
+  return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+function unb64url(s) {
+  const bin = atob(s.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((s.length + 3) % 4));
+  return Uint8Array.from(bin, c => c.charCodeAt(0));
+}
+function say(text, ms) {
+  note.textContent = text;
+  note.classList.add('show');
+  clearTimeout(say.t);
+  if (ms) say.t = setTimeout(() => note.classList.remove('show'), ms);
+}
+function trouble(e) {
+  say(!navigator.onLine ? 'No internet' : e && e.message === 'slow' ? 'Slow down' : 'No connection', 1800);
+}
+
+// ---------- envelope ----------
+async function seal(msg) {
+  msg.ts = Date.now();
+  msg.n = b64url(rand(16));
+  const iv = rand(12);
+  const sealed = new Uint8Array(await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv, additionalData: enc.encode(topic), tagLength: 128 }, cryptoKey, enc.encode(JSON.stringify(msg))));
+  const blob = new Uint8Array(iv.length + sealed.length);
+  blob.set(iv); blob.set(sealed, iv.length);
+  return 'gh1.' + b64url(blob);
+}
+
+// ---------- MQTT 3.1.1 publisher over WebSocket (QoS 0 only, never subscribes) ----------
+const mq = { ws: null, up: false, idx: 0, fails: 0, retry: 0, ping: 0, rx: new Uint8Array(0), lastRx: 0, waiters: [] };
+
+function varLen(n) {
+  const out = [];
+  do { let b = n % 128; n = Math.floor(n / 128); if (n) b |= 128; out.push(b); } while (n);
+  return out;
+}
+function connectPacket() {
+  const id = enc.encode('gh' + Array.from(rand(8), b => b.toString(16).padStart(2, '0')).join(''));
+  // "MQTT", level 4, clean session, keepalive 30 s (we ping every 25 s)
+  const vh = [0, 4, 77, 81, 84, 84, 4, 0x02, 0, 30];
+  return Uint8Array.of(0x10, ...varLen(vh.length + 2 + id.length), ...vh, 0, id.length, ...id);
+}
+function mqConnect() {
+  if (mq.ws || !cryptoKey || document.hidden) return;
+  clearTimeout(mq.retry);
+  let ws;
+  try { ws = new WebSocket(BROKERS[mq.idx], 'mqtt'); } catch (_) { mqLost(null); return; }
+  ws.binaryType = 'arraybuffer';
+  mq.ws = ws; mq.up = false; mq.rx = new Uint8Array(0);
+  const guard = setTimeout(() => { if (mq.ws === ws && !mq.up) mqLost(ws); }, 8000);
+  ws.onopen = () => { try { ws.send(connectPacket()); } catch (_) { mqLost(ws); } };
+  ws.onmessage = e => { if (mq.ws === ws && e.data instanceof ArrayBuffer) mqData(new Uint8Array(e.data)); };
+  ws.onerror = ws.onclose = () => { clearTimeout(guard); if (mq.ws === ws) mqLost(ws); };
+}
+function mqLost(ws) {
+  const wasUp = mq.up;
+  if (ws) { ws.onopen = ws.onmessage = ws.onerror = ws.onclose = null; try { ws.close(); } catch (_) {} }
+  mq.ws = null; mq.up = false; clearInterval(mq.ping);
+  // A broker that was working gets one quick retry; a broker that never answered hands over to the other one,
+  // and after a full round of failures we back off 1 s .. 30 s.
+  if (wasUp) mq.fails = 0;
+  else { mq.fails++; mq.idx = (mq.idx + 1) % BROKERS.length; }
+  if (document.hidden) return;
+  const delay = wasUp ? 500 : mq.fails % 2 ? 250 : Math.min(30000, 1000 * 2 ** (mq.fails / 2 - 1));
+  clearTimeout(mq.retry);
+  mq.retry = setTimeout(mqConnect, delay);
+}
+function mqClose() {
+  clearTimeout(mq.retry); clearInterval(mq.ping);
+  const ws = mq.ws;
+  mq.ws = null; mq.up = false;
+  if (!ws) return;
+  ws.onopen = ws.onmessage = ws.onerror = ws.onclose = null;
+  try { if (ws.readyState === 1) ws.send(Uint8Array.of(0xE0, 0)); ws.close(); } catch (_) {}
+}
+// Broker bytes are untrusted: bounded length decoding, and only CONNACK matters.
+function mqData(chunk) {
+  mq.lastRx = performance.now();
+  const buf = new Uint8Array(mq.rx.length + chunk.length);
+  buf.set(mq.rx); buf.set(chunk, mq.rx.length);
+  let off = 0;
+  for (;;) {
+    if (buf.length - off < 2) break;
+    let len = 0, mul = 1, i = off + 1, b, k = 0;
+    do {
+      if (k++ === 4) { mqLost(mq.ws); return; }
+      if (i >= buf.length) { mq.rx = buf.slice(off); return; }
+      b = buf[i++]; len += (b & 127) * mul; mul *= 128;
+    } while (b & 128);
+    if (len > 65536) { mqLost(mq.ws); return; }
+    if (buf.length - i < len) break;
+    const type = buf[off] >> 4, pkt = buf.subarray(i, i + len);
+    off = i + len;
+    if (type === 2 && !mq.up) {
+      if (len !== 2 || pkt[1] !== 0) { mqLost(mq.ws); return; }
+      mq.up = true; mq.fails = 0;
+      mq.ping = setInterval(mqPing, 25000);
+      mq.waiters.slice().forEach(f => f(true));
+    }
+    // PINGRESP (13) only refreshes lastRx; anything else is ignored: we never subscribe.
+  }
+  mq.rx = buf.slice(off);
+}
+function mqPing() {
+  if (!mq.up) return;
+  if (performance.now() - mq.lastRx > 65000) { mqLost(mq.ws); return; }   // two pings unanswered: dead socket
+  try { mq.ws.send(Uint8Array.of(0xC0, 0)); } catch (_) { mqLost(mq.ws); }
+}
+function waitUp(ms) {
+  return new Promise(res => {
+    if (mq.up) { res(true); return; }
+    const done = v => { clearTimeout(t); const i = mq.waiters.indexOf(done); if (i >= 0) mq.waiters.splice(i, 1); res(v); };
+    const t = setTimeout(() => done(false), ms);
+    mq.waiters.push(done);
+  });
+}
+function publish(text) {
+  const ws = mq.ws;
+  if (!mq.up || !ws || ws.readyState !== 1 || ws.bufferedAmount > 262144) return false;
+  const p = enc.encode(text), t = topicBytes;
+  const rem = 2 + t.length + p.length, lb = varLen(rem);
+  const pkt = new Uint8Array(1 + lb.length + rem);
+  pkt[0] = 0x30; pkt.set(lb, 1);
+  let o = 1 + lb.length;
+  pkt[o++] = t.length >> 8; pkt[o++] = t.length & 255;
+  pkt.set(t, o); pkt.set(p, o + t.length);
+  try { ws.send(pkt); return true; } catch (_) { mqLost(ws); return false; }
+}
+
+// ---------- sending: one ordered queue, broker first, ntfy only for single commands ----------
+let chain = Promise.resolve();
+async function relay(text) {
+  const ac = new AbortController(), t = setTimeout(() => ac.abort(), 8000);
+  try {
+    const r = await fetch(RELAY + topic, { method: 'POST', body: text, cache: 'no-store',
+      referrerPolicy: 'no-referrer', credentials: 'omit', signal: ac.signal });
+    if (r.status === 429) throw new Error('slow');
+    return r.ok;
+  } finally { clearTimeout(t); }
+}
+async function deliver(msg, single) {
+  const text = await seal(msg);
+  if (text.length > MAX_BODY) return false;
+  if (publish(text)) return true;
+  if (!single) return false;                    // strokes and repeats never go through ntfy (nor force reconnects)
+  mqConnect();                                  // a deliberate tap may skip the backoff wait
+  if (mq.ws && !mq.up && mq.fails === 0) await waitUp(1500);   // first connect after opening: worth a short wait
+  if (publish(text)) return true;
+  return relay(text);
+}
+// Resolves true/false; failures show two quiet words at the bottom.
+function send(msg, single) {
+  const job = chain.then(() => deliver(msg, single)).catch(e => { trouble(e); return null; });
+  chain = job;
+  return job.then(ok => { if (ok === false) trouble(); return !!ok; });
+}
+
+// ---------- hold-still-for-4-s detector + its filling ring ----------
+let hold = null, ring = null, ignorePid = null;
+function holdStart(pid, x, y, cx, cy, r, done) {
+  holdCancel();
+  const now = performance.now();
+  hold = { pid, x, y, done, timer: setTimeout(() => {
+    const h = hold;
+    if (!h || h.pid !== pid) return;
+    hold = null;
+    if (ring) { ring.end = performance.now(); ring.done = true; }
+    ignorePid = pid;                  // the finger is still down: the new mode must not see it
+    h.done();
+    kick();
+  }, HOLD_MS) };
+  ring = { x: cx, y: cy, r, t0: now, end: 0, done: false };
+  kick();
+}
+function holdMove(pid, x, y) {
+  if (hold && hold.pid === pid && Math.hypot(x - hold.x, y - hold.y) >= HOLD_SLOP) holdCancel();
+}
+function holdEnd(pid) { if (hold && hold.pid === pid) holdCancel(); }
+function holdCancel() {
+  if (!hold) return;
+  clearTimeout(hold.timer);
+  hold = null;
+  if (ring && !ring.end) ring.end = performance.now();
+  kick();
+}
+
+// ---------- modes ----------
+function setMode(m) {
+  holdCancel();
+  stopRepeats();
+  if (pendingOk) flushOk();
+  if (g) { g.ended = true; hudUp(performance.now()); g = null; }
+  if (dg) endStroke(true);
+  mg = null;
+  if (mode === 'message' && m !== 'message') msgEl.blur();
+  mode = m;
+  body.dataset.mode = m;
+  if (m === 'draw') relayout();
+  updateHint();
+  kick();
+}
+
+// ---------- mode 1: buttons ----------
+const reps = new Map();
+function flash(zone, cls) {
+  zone.classList.remove('hit', 'err');
+  void zone.offsetWidth;          // restart the fade
+  zone.classList.add(cls);
+  clearTimeout(zone.t);
+  zone.t = setTimeout(() => zone.classList.remove(cls), 180);
+}
+function fire(zone, single) {
+  flash(zone, 'hit');
+  send({ c: zone.dataset.cmd }, single).then(ok => { if (!ok) flash(zone, 'err'); });
+}
+function btnDown(e) {
+  const r = hubEl.getBoundingClientRect(), cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+  if (Math.hypot(e.clientX - cx, e.clientY - cy) <= r.width / 2) {
+    // The centre does nothing on a tap; only a still 4 s hold (to the stick).
+    holdStart(e.pointerId, e.clientX, e.clientY, cx, cy, r.width / 2 + 8, () => setMode('stick'));
+    return;
+  }
+  const zone = e.target.closest ? e.target.closest('.zone') : null;
+  if (!zone) return;
+  fire(zone, true);
+  if ('repeat' in zone.dataset) {
+    const rep = { i: 0, t: setTimeout(() => { rep.i = setInterval(() => fire(zone, false), 250); }, 450) };
+    reps.set(e.pointerId, rep);
+  }
+}
+function btnUp(pid) {
+  const rep = reps.get(pid);
+  if (rep) { clearTimeout(rep.t); clearInterval(rep.i); reps.delete(pid); }
+}
+function stopRepeats() { Array.from(reps.keys()).forEach(btnUp); }
+
+// ---------- mode 2: stick ----------
+let g = null, pendingOk = false, okTimer = 0, lastTapEnd = -1e9;
+const hud = { vis: false, down: false, x: 0, y: 0, t0: 0, tUp: 0, aUp: 0, kx: 0, ky: 0, vx: 0, vy: 0, f: 0, ang: 0, pulse: 0 };
+const flashes = [];
+const repeatMs = f => f < 0.5 ? 420 : f <= 0.85 ? 220 : 110;
+
+function hudDown(x, y, now) {
+  Object.assign(hud, { vis: true, down: true, x, y, t0: now, kx: 0, ky: 0, vx: 0, vy: 0, f: 0, pulse: 0 });
+  kick();
+}
+function hudUp(now) {
+  if (!hud.down) return;
+  hud.down = false;
+  hud.aUp = Math.min(1, (now - hud.t0) / 120);
+  hud.tUp = now;
+  kick();
+}
+function flushOk() {
+  if (!pendingOk) return;
+  pendingOk = false;
+  clearTimeout(okTimer);
+  send({ c: 'ok' }, true);
+}
+function stickDown(e, now) {
+  if (g && !g.ended) return;                       // one finger drives the stick
+  const x = e.clientX, y = e.clientY;
+  g = { pid: e.pointerId, ax: x, ay: y, x, y, t0: now, maxD: 0, steps: 0, lastStep: -1e9, dir: null, active: false,
+        quick: false, flick: null, flickAt: 0, noFlick: false, ended: false,
+        second: pendingOk && now - lastTapEnd < DOUBLE_MS };
+  if (g.second) clearTimeout(okTimer);             // maybe a double tap: decide when this touch ends
+  hudDown(x, y, now);
+  holdStart(e.pointerId, x, y, x, y, 74, () => setMode('buttons'));
+}
+function stickMove(e) {
+  if (!g || g.ended || e.pointerId !== g.pid) return;
+  g.x = e.clientX; g.y = e.clientY;
+  g.maxD = Math.max(g.maxD, Math.hypot(g.x - g.ax, g.y - g.ay));
+  holdMove(g.pid, g.x, g.y);
+  stickUpdate(performance.now());
+}
+function step(dir, now) {
+  send({ c: dir }, g.steps === 0);                 // only the first step of a push may fall back to ntfy
+  g.steps++;
+  g.lastStep = now;
+  hud.pulse = 1;
+}
+// Runs on every move and every animation frame while a finger is down (repeats need no movement).
+function stickUpdate(now) {
+  const el = now - g.t0, dx = g.x - g.ax, dy = g.y - g.ay, d = Math.hypot(dx, dy);
+  if (g.second && pendingOk && (el > TAP_MS || g.maxD >= DEAD)) { g.second = false; flushOk(); }
+  if (g.steps === 0 && !g.noFlick) {
+    if (g.flick) {
+      if (now - g.flickAt < 160) return;           // waiting for the lift that completes the flick
+      g.flick = null; g.noFlick = true;            // the finger stayed: it was a hard push after all
+    } else if (el < FLICK_MS && Math.abs(dy) >= FLICK_PX && Math.abs(dy) > Math.abs(dx) * 1.2) {
+      g.flick = dy < 0 ? 'up' : 'down'; g.flickAt = now;
+      return;
+    } else if (el < FLICK_MS && d >= DEAD && Math.abs(dy) > Math.abs(dx) && Math.abs(dy) / Math.max(el, 16) >= FLICK_SPEED) {
+      return;                                      // still looks like a flick: hold the first step back
+    } else if (el >= FLICK_MS) g.noFlick = true;
+  }
+  if (d < (g.active ? DEAD - 4 : DEAD)) { g.active = false; return; }   // small hysteresis at the dead-zone edge
+  if (g.second && pendingOk) { g.second = false; flushOk(); }
+  const dir = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'down' : 'up');
+  if (!g.active || dir !== g.dir) { g.active = true; g.dir = dir; g.quick = true; }
+  if (now - g.lastStep >= (g.quick ? 110 : repeatMs(Math.min(1, d / RADIUS)))) { g.quick = false; step(dir, now); }
+}
+// Called from pointerup and from touchend (whichever comes first), so mode changes run inside a real
+// touch gesture: iOS only opens the keyboard for a focus() made there.
+function stickEnd(x, y, cancel) {
+  if (!g || g.ended) return;
+  const now = performance.now();
+  if (x != null) { g.x = x; g.y = y; g.maxD = Math.max(g.maxD, Math.hypot(x - g.ax, y - g.ay)); }
+  g.ended = true;
+  holdEnd(g.pid);
+  hudUp(now);
+  if (cancel) { if (g.second) flushOk(); return; }
+  const el = now - g.t0, dx = g.x - g.ax, dy = g.y - g.ay;
+  let flick = g.flick;
+  if (!flick && g.steps === 0 && !g.noFlick && el <= FLICK_MS + 40 && Math.abs(dy) >= FLICK_PX && Math.abs(dy) > Math.abs(dx) * 1.2) {
+    flick = dy < 0 ? 'up' : 'down';
+  }
+  if (flick) {
+    if (pendingOk) flushOk();
+    if (flick === 'up') setMode('draw');
+    else { setMode('message'); focusWanted = true; }
+    return;
+  }
+  if (g.steps === 0 && g.maxD < DEAD && el < TAP_MS) {
+    flashes.push({ k: 'ok', x: g.ax, y: g.ay, t0: now });
+    if (g.second && pendingOk) {
+      pendingOk = false; clearTimeout(okTimer); lastTapEnd = -1e9;
+      flashes.push({ k: 'back', x: g.ax, y: g.ay, t0: now });
+      send({ c: 'back' }, true);
+    } else {
+      if (pendingOk) flushOk();
+      pendingOk = true; lastTapEnd = now;
+      okTimer = setTimeout(flushOk, DOUBLE_MS);
+    }
+    kick();
+    return;
+  }
+  if (pendingOk) flushOk();
+}
+
+// ---------- mode 3: draw ----------
+// rot: how the phone is physically held while the page stays portrait (Portrait Orientation Lock).
+// 0 upright, 1 right edge down, -1 left edge down, 2 upside down.
+let rot = 0, pendingRot = null, fr = null;
+let dg = null, strokes = [], col = 0, lastDrawTap = -1e9;
+let nextId = crypto.getRandomValues(new Uint32Array(1))[0] % 2147483646 + 1;
+
+// The user's frame (what they see as right/down) expressed in page pixels, plus the 16:9 TV box inside it.
+function computeFrame() {
+  const W = innerWidth, H = innerHeight, r = W > H ? 0 : rot;   // a page that rotated itself needs no help
+  let R, D, O, uw, uh;
+  if (r === 1) { R = [0, -1]; D = [1, 0]; O = [0, H]; uw = H; uh = W; }
+  else if (r === -1) { R = [0, 1]; D = [-1, 0]; O = [W, 0]; uw = H; uh = W; }
+  else if (r === 2) { R = [-1, 0]; D = [0, -1]; O = [W, H]; uw = W; uh = H; }
+  else { R = [1, 0]; D = [0, 1]; O = [0, 0]; uw = W; uh = H; }
+  const m = 14, bw = Math.min(uw - 2 * m, (uh - 2 * m) * 16 / 9), bh = bw * 9 / 16;
+  return { R, D, O, bx: (uw - bw) / 2, by: (uh - bh) / 2, bw, bh };
+}
+function toTV(sx, sy) {
+  const dx = sx - fr.O[0], dy = sy - fr.O[1];
+  const ux = dx * fr.R[0] + dy * fr.R[1], uy = dx * fr.D[0] + dy * fr.D[1];
+  return [clamp(Math.round((ux - fr.bx) / fr.bw * 10000), 0, 10000), clamp(Math.round((uy - fr.by) / fr.bh * 10000), 0, 10000)];
+}
+function toScreen(X, Y) {
+  const ux = fr.bx + X / 10000 * fr.bw, uy = fr.by + Y / 10000 * fr.bh;
+  return [fr.O[0] + ux * fr.R[0] + uy * fr.D[0], fr.O[1] + ux * fr.R[1] + uy * fr.D[1]];
+}
+const lineW = () => Math.max(2.5, (STROKE_W === 2 ? 14 : 6) * fr.bh / 1080);
+const mid = (a, b) => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+
+function inkStyle(c) {
+  ink.strokeStyle = ink.fillStyle = PALETTE[c];
+  ink.lineWidth = lineW(); ink.lineCap = 'round'; ink.lineJoin = 'round';
+}
+// Same smoothing as a full redraw (midpoint quadratics), drawn piece by piece as points arrive.
+function inkPiece(s, final) {
+  if (mode !== 'draw') return;
+  const p = s.pts, n = p.length / 2, P = i => toScreen(p[2 * i], p[2 * i + 1]);
+  inkStyle(s.col);
+  ink.beginPath();
+  if (final) {
+    if (n === 1) { const a = P(0); ink.arc(a[0], a[1], lineW() / 2, 0, 2 * Math.PI); ink.fill(); return; }
+    const a = mid(P(n - 2), P(n - 1)), b = P(n - 1);
+    ink.moveTo(a[0], a[1]); ink.lineTo(b[0], b[1]);
+  } else if (n === 2) {
+    const a = P(0), b = mid(P(0), P(1));
+    ink.moveTo(a[0], a[1]); ink.lineTo(b[0], b[1]);
+  } else if (n >= 3) {
+    const a = mid(P(n - 3), P(n - 2)), c = P(n - 2), b = mid(P(n - 2), P(n - 1));
+    ink.moveTo(a[0], a[1]); ink.quadraticCurveTo(c[0], c[1], b[0], b[1]);
+  } else return;
+  ink.stroke();
+}
+function redrawInk() {
+  ink.setTransform(1, 0, 0, 1, 0, 0);
+  ink.clearRect(0, 0, inkCv.width, inkCv.height);
+  if (mode !== 'draw') return;
+  ink.setTransform(dpr, 0, 0, dpr, 0, 0);
+  // A barely visible outline of the TV screen.
+  const c = [toScreen(0, 0), toScreen(10000, 0), toScreen(10000, 10000), toScreen(0, 10000)];
+  ink.beginPath(); ink.moveTo(c[0][0], c[0][1]); c.slice(1).forEach(q => ink.lineTo(q[0], q[1])); ink.closePath();
+  ink.strokeStyle = 'rgba(255,255,255,.07)'; ink.lineWidth = 1; ink.stroke();
+  for (const s of strokes) {
+    const p = s.pts, n = p.length / 2, P = i => toScreen(p[2 * i], p[2 * i + 1]);
+    if (!n) continue;
+    inkStyle(s.col);
+    ink.beginPath();
+    let a = P(0);
+    if (n === 1) { ink.arc(a[0], a[1], lineW() / 2, 0, 2 * Math.PI); ink.fill(); continue; }
+    ink.moveTo(a[0], a[1]);
+    a = mid(P(0), P(1)); ink.lineTo(a[0], a[1]);
+    for (let i = 1; i < n - 1; i++) { const c1 = P(i), b = mid(P(i), P(i + 1)); ink.quadraticCurveTo(c1[0], c1[1], b[0], b[1]); }
+    a = P(n - 1); ink.lineTo(a[0], a[1]);
+    ink.stroke();
+  }
+}
+function relayout() { fr = computeFrame(); redrawInk(); }
+
+function drawDown(e, now) {
+  if (dg) return;
+  const x = e.clientX, y = e.clientY;
+  dg = { pid: e.pointerId, x0: x, y0: y, t0: now, maxD: 0, started: false, id: 0, s: null, pending: [], timer: 0, first: toTV(x, y) };
+  holdStart(e.pointerId, x, y, x, y, 74, () => setMode('stick'));
+}
+function addPoint(q) {
+  const p = dg.s.pts, n = p.length;
+  if (n && Math.abs(p[n - 2] - q[0]) < 6 && Math.abs(p[n - 1] - q[1]) < 6) return;
+  p.push(q[0], q[1]);
+  dg.pending.push(q[0], q[1]);
+  inkPiece(dg.s, false);
+  if (dg.pending.length >= BATCH_PTS * 2) flushStroke(false);
+}
+function drawMove(e) {
+  if (!dg || e.pointerId !== dg.pid) return;
+  let list = e.getCoalescedEvents ? e.getCoalescedEvents() : [];
+  if (!list || !list.length) list = [e];
+  for (const ev of list) {
+    const x = ev.clientX, y = ev.clientY;
+    if (!dg.started) {
+      dg.maxD = Math.max(dg.maxD, Math.hypot(x - dg.x0, y - dg.y0));
+      if (dg.maxD < HOLD_SLOP) continue;           // taps and holds never leave ink
+      holdCancel();
+      dg.started = true;
+      dg.id = nextId; nextId = nextId >= 2147483647 ? 1 : nextId + 1;   // a new stroke id per touch
+      dg.s = { col, pts: [] };
+      strokes.push(dg.s);
+      addPoint(dg.first);
+      dg.timer = setInterval(() => flushStroke(false), BATCH_MS);
+    }
+    addPoint(toTV(x, y));
+  }
+}
+function flushStroke(end) {
+  if (!dg || !dg.started) return;
+  do {
+    const p = dg.pending.splice(0, BATCH_PTS * 2), last = end && !dg.pending.length;
+    if (!p.length && !last) break;
+    send({ c: 'stroke', d: { id: dg.id, col: dg.s.col, w: STROKE_W, p, end: last } }, false);
+  } while (dg.pending.length);
+}
+function endStroke(cancel, x, y) {
+  if (dg.started) {
+    if (!cancel && x != null) addPoint(toTV(x, y));
+    clearInterval(dg.timer);
+    flushStroke(true);
+    inkPiece(dg.s, true);
+  }
+  dg = null;
+  if (pendingRot !== null) { rot = pendingRot; pendingRot = null; if (mode === 'draw') relayout(); }
+}
+function drawUp(e, cancel) {
+  if (!dg || e.pointerId !== dg.pid) return;
+  holdEnd(dg.pid);
+  const now = performance.now(), tap = !dg.started && !cancel && now - dg.t0 < TAP_MS, t0 = dg.t0;
+  endStroke(cancel, e.clientX, e.clientY);
+  if (!tap) return;
+  if (t0 - lastDrawTap < DOUBLE_MS) {
+    col = (col + 1) % PALETTE.length;
+    lastDrawTap = -1e9;
+    flashes.push({ k: 'dot', x: e.clientX - fr.D[0] * 58, y: e.clientY - fr.D[1] * 58, t0: now, c: PALETTE[col] });
+    kick();
+  } else lastDrawTap = now;
+  if (needMotion()) motionWanted = true;
+}
+
+// ---------- mode 4: message ----------
+let mg = null, focusWanted = false, motionWanted = false, inFlight = null;
+// The limit is in UTF-16 code units (what the receivers cut at); cut at a whole character (emoji, flag, ZWJ sequence).
+function cutGraphemes(s, max) {
+  if (s.length <= max) return s;
+  if (typeof Intl !== 'undefined' && Intl.Segmenter) {
+    let end = 0;
+    for (const seg of new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(s)) {
+      if (seg.index + seg.segment.length > max) break;
+      end = seg.index + seg.segment.length;
+    }
+    return s.slice(0, end);
+  }
+  s = s.slice(0, max);
+  return /[\uD800-\uDBFF]$/.test(s) ? s.slice(0, -1) : s;   // never split an emoji in half
+}
+function clipText(s) {
+  s = s.replace(/\s+/g, ' ').trim();
+  if (s.length > MAX_TEXT) s = cutGraphemes(s, MAX_TEXT).trim();
+  return s;
+}
+function focusMsg() {
+  msgEl.focus({ preventScroll: true });
+  const n = msgEl.value.length;
+  try { msgEl.setSelectionRange(n, n); } catch (_) {}
+}
+function updateCount() {
+  const left = Math.max(0, MAX_TEXT - msgEl.value.length);
+  countEl.textContent = left <= 40 ? String(left) : '';
+}
+// Safari's maxlength counts whole characters, so emoji can get past it: enforce the code-unit limit here
+// (never mid-composition, which would break Japanese/Chinese input).
+function enforceMax() {
+  if (msgEl.value.length > MAX_TEXT) {
+    msgEl.value = cutGraphemes(msgEl.value, MAX_TEXT);
+    const n = msgEl.value.length;
+    try { msgEl.setSelectionRange(n, n); } catch (_) {}
+  }
+  updateCount();
+}
+async function submitMsg() {
+  const raw = msgEl.value, text = clipText(raw);
+  if (!text) { msgEl.blur(); return; }
+  if (text === inFlight) { say('Sending…', 1200); return; }   // the same words are already on their way
+  msgEl.blur();                                     // drop the keyboard so the TV is in view
+  inFlight = text;
+  const ok = await send({ c: 'show', t: text }, true);   // send() keeps order: a newer text queues behind
+  if (inFlight === text) inFlight = null;
+  if (!ok) return;                                  // keep the words; a tap reopens the keyboard to retry
+  if (msgEl.value === raw) { msgEl.value = ''; updateCount(); }
+  ghostEl.textContent = text;
+  ghostEl.classList.remove('fly'); void ghostEl.offsetWidth; ghostEl.classList.add('fly');
+}
+function msgDown(e, now) {
+  if (mg) return;
+  mg = { pid: e.pointerId, x: e.clientX, y: e.clientY, t0: now };
+  holdStart(e.pointerId, e.clientX, e.clientY, e.clientX, e.clientY, 74, () => setMode('stick'));
+}
+function msgUp(e, cancel) {
+  if (!mg || e.pointerId !== mg.pid) return;
+  holdEnd(mg.pid);
+  const still = Math.hypot(e.clientX - mg.x, e.clientY - mg.y) < HOLD_SLOP;
+  if (!cancel && still && performance.now() - mg.t0 < 600) {
+    if (needMotion()) motionWanted = true;          // first tap asks for shake; the next one opens the keyboard
+    else focusWanted = true;
+  }
+  mg = null;
+}
+
+// ---------- motion: tilt (draw orientation) and shake (clear) ----------
+const askable = !!(window.DeviceMotionEvent && typeof DeviceMotionEvent.requestPermission === 'function');
+let motionOn = !askable, motionDenied = false, armed = true, lastJolt = -1e9, lastShake = -1e9;
+const needMotion = () => askable && !motionOn && !motionDenied;
+function motionReady() { if (!motionOn) { motionOn = true; updateHint(); } }
+function updateHint() {
+  if (motionDenied) hintEl.textContent = 'Two-finger tap clears the TV';   // no shake: say how else to clear
+  hintEl.classList.toggle('show', (mode === 'draw' || mode === 'message') && (needMotion() || motionDenied));
+}
+function askMotion() {
+  // Both prompts must start synchronously inside the touchend that iOS counts as the user's tap.
+  const asks = [];
+  try { if (window.DeviceOrientationEvent && typeof DeviceOrientationEvent.requestPermission === 'function') asks.push(DeviceOrientationEvent.requestPermission()); } catch (_) {}
+  try { asks.push(DeviceMotionEvent.requestPermission()); } catch (_) {}
+  Promise.all(asks.map(p => Promise.resolve(p).catch(() => 'denied'))).then(r => {
+    if (r.length && r.every(v => v === 'granted')) motionReady();
+    else { motionDenied = true; updateHint(); }
+  });
+}
+window.addEventListener('deviceorientation', e => {
+  if (e.beta == null || e.gamma == null) return;
+  motionReady();
+  // Gravity projected on the screen, in page pixels' directions (x right, y down).
+  const b = e.beta * Math.PI / 180, gm = e.gamma * Math.PI / 180;
+  const gx = Math.sin(gm) * Math.cos(b), gy = Math.sin(b);
+  if (Math.hypot(gx, gy) < 0.5) return;            // nearly flat: keep the last answer
+  const ang = Math.atan2(gy, gx) * 180 / Math.PI;  // 90 = bottom edge down
+  let r = null;                                    // 35 degree bands leave gaps = hysteresis
+  if (Math.abs(ang - 90) < 35) r = 0;
+  else if (Math.abs(ang) < 35) r = 1;
+  else if (Math.abs(ang) > 145) r = -1;
+  else if (Math.abs(ang + 90) < 35) r = 2;
+  if (r === null || r === rot) return;
+  if (dg && dg.started) { pendingRot = r; return; }   // never turn the canvas under a moving finger
+  rot = r;
+  if (mode === 'draw') relayout();
+});
+window.addEventListener('devicemotion', e => {
+  const a = e.acceleration, ag = e.accelerationIncludingGravity;
+  let m;
+  if (a && a.x != null) m = Math.hypot(a.x, a.y, a.z);
+  else if (ag && ag.x != null) m = Math.abs(Math.hypot(ag.x, ag.y, ag.z) - 9.81);
+  else return;
+  motionReady();
+  // While the field has focus a shake is iOS "Undo Typing", not a clear (and a jolt then must not pair with one after).
+  if (document.activeElement === msgEl) { armed = true; lastJolt = -1e9; return; }
+  if (mode !== 'draw' && mode !== 'message') return;
+  // A jolt is a spike over 25 m/s^2; it re-arms only after the phone calms down, so one long spike counts once.
+  if (m < 12) { armed = true; return; }
+  if (m <= 25 || !armed) return;
+  armed = false;
+  const now = performance.now();
+  if (now - lastJolt <= 700 && now - lastShake > 1200) { lastShake = now; lastJolt = -1e9; shake(); }
+  else lastJolt = now;
+});
+function shake() {
+  send({ c: 'clear' }, true);
+  if (mode === 'draw') {
+    holdCancel();
+    if (dg) endStroke(true);
+    strokes = [];
+    redrawInk();
+  }
+  flashes.push({ k: 'wipe', t0: performance.now() });
+  kick();
+}
+
+// ---------- two-finger tap (draw and message): clears like a shake, without motion access ----------
+const fingers = new Map();
+let tft = null;                                    // a two-finger tap in progress: { t0, moved }
+function twoDown(e, now) {
+  if (e.isPrimary) fingers.clear();                // a new touch sequence: forget any finger that never lifted
+  const first = fingers.size === 1 ? fingers.values().next().value : null;
+  fingers.set(e.pointerId, { x: e.clientX, y: e.clientY, t0: now });
+  if (tft) { tft.moved = true; return true; }      // a third finger: not a tap
+  if (fingers.size !== 2 || !first || now - first.t0 >= TAP_MS || (dg && dg.started)) return false;
+  tft = { t0: first.t0, moved: false };
+  holdCancel();                                    // the first finger's gesture becomes part of the tap
+  if (dg) endStroke(true);
+  mg = null;
+  return true;
+}
+function twoMove(e) {
+  const f = fingers.get(e.pointerId);
+  if (tft && f && Math.hypot(e.clientX - f.x, e.clientY - f.y) >= HOLD_SLOP) tft.moved = true;
+}
+function twoUp(e, cancel) {
+  const f = fingers.get(e.pointerId);
+  if (!f) return false;
+  fingers.delete(e.pointerId);
+  if (!tft) return false;
+  if (cancel || Math.hypot(e.clientX - f.x, e.clientY - f.y) >= HOLD_SLOP) tft.moved = true;
+  if (fingers.size) return true;
+  const t = tft;
+  tft = null;
+  if (!t.moved && performance.now() - t.t0 < 600 && (mode === 'draw' || mode === 'message')) shake();
+  return true;
+}
+
+// ---------- one animation loop for the stick HUD, the hold ring and the little flashes ----------
+let raf = 0;
+function kick() { if (!raf) raf = requestAnimationFrame(frame); }
+function frame() {
+  raf = 0;
+  const now = performance.now();
+  let busy = false;
+  if (g && !g.ended && mode === 'stick') { stickUpdate(now); busy = true; }
+  fx.setTransform(1, 0, 0, 1, 0, 0);
+  fx.clearRect(0, 0, fxCv.width, fxCv.height);
+  fx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  busy = drawHud(now) || busy;
+  busy = drawFlashes(now) || busy;
+  busy = drawRing(now) || busy;
+  if (busy) kick();
+}
+// The "eclipse": a black disc with a breathing teal corona that flares toward the push.
+function drawHud(now) {
+  if (!hud.vis) return false;
+  let a;
+  if (hud.down) a = Math.min(1, (now - hud.t0) / 120);
+  else { a = hud.aUp * (1 - (now - hud.tUp) / 420); if (a <= 0) { hud.vis = false; return false; } }
+  let tx = 0, ty = 0, tf = 0;
+  if (hud.down && g && !g.ended) {
+    const dx = g.x - hud.x, dy = g.y - hud.y, d = Math.hypot(dx, dy);
+    if (d > 1) { const k = Math.min(d, RADIUS) / d * 0.4; tx = dx * k; ty = dy * k; hud.ang = Math.atan2(dy, dx); }
+    tf = clamp((d - 8) / (RADIUS - 8), 0, 1);
+  }
+  hud.vx = hud.vx * 0.6 + (tx - hud.kx) * 0.28; hud.kx += hud.vx;   // a springy knob: it overshoots a little on release
+  hud.vy = hud.vy * 0.6 + (ty - hud.ky) * 0.28; hud.ky += hud.vy;
+  hud.f += (tf - hud.f) * 0.3;
+  hud.pulse *= 0.86;
+  const br = 0.5 + 0.5 * Math.sin(now / 2600 * 2 * Math.PI);
+  const cx = hud.x + hud.kx, cy = hud.y + hud.ky, R = 30;
+  const ca = a * (0.7 + 0.15 * br + 0.3 * hud.pulse), outer = R + 24 + 7 * br + 12 * hud.pulse;
+  fx.globalCompositeOperation = 'lighter';
+  let gr = fx.createRadialGradient(cx, cy, R - 3, cx, cy, outer);
+  gr.addColorStop(0, `rgba(130,255,240,${0.85 * ca})`);
+  gr.addColorStop(0.12, `rgba(25,179,166,${0.55 * ca})`);
+  gr.addColorStop(0.45, `rgba(25,179,166,${0.16 * ca})`);
+  gr.addColorStop(1, 'rgba(25,179,166,0)');
+  fx.fillStyle = gr;
+  fx.beginPath(); fx.arc(cx, cy, outer, 0, 2 * Math.PI); fx.fill();
+  if (hud.f > 0.01) {
+    const f = hud.f, ox = R + 4 + 16 * f, rr = 22 + 40 * f;
+    fx.save();
+    fx.translate(cx, cy); fx.rotate(hud.ang); fx.scale(1, 0.62);
+    gr = fx.createRadialGradient(ox, 0, 0, ox, 0, rr);
+    gr.addColorStop(0, `rgba(150,255,242,${(0.25 + 0.65 * f + 0.2 * hud.pulse) * a})`);
+    gr.addColorStop(0.4, `rgba(25,179,166,${(0.15 + 0.4 * f) * a})`);
+    gr.addColorStop(1, 'rgba(25,179,166,0)');
+    fx.fillStyle = gr;
+    fx.beginPath(); fx.arc(ox, 0, rr, 0, 2 * Math.PI); fx.fill();
+    fx.restore();
+  }
+  fx.globalCompositeOperation = 'source-over';
+  fx.fillStyle = `rgba(0,0,0,${a})`;
+  fx.beginPath(); fx.arc(cx, cy, R, 0, 2 * Math.PI); fx.fill();
+  fx.strokeStyle = `rgba(170,255,245,${0.32 * a})`; fx.lineWidth = 1.2; fx.stroke();
+  return true;
+}
+function drawRing(now) {
+  if (!ring) return false;
+  const el = (ring.end || now) - ring.t0, p = Math.min(1, el / HOLD_MS);
+  let a = clamp((el - 300) / 400, 0, 1);           // quiet for taps: it only shows once a hold is clearly meant
+  let r = ring.r;
+  if (ring.end) {
+    const k = 1 - (now - ring.end) / (ring.done ? 500 : 220);
+    if (k <= 0) { ring = null; return false; }
+    a *= k;
+    if (ring.done) r += 12 * (1 - k);
+  }
+  if (a <= 0) return true;
+  fx.lineCap = 'round';
+  fx.lineWidth = 2.5;
+  fx.strokeStyle = `rgba(25,179,166,${0.12 * a})`;
+  fx.beginPath(); fx.arc(ring.x, ring.y, r, 0, 2 * Math.PI); fx.stroke();
+  fx.shadowColor = '#19b3a6'; fx.shadowBlur = 12;
+  fx.strokeStyle = `rgba(60,220,205,${0.85 * a})`;
+  fx.beginPath(); fx.arc(ring.x, ring.y, r, -Math.PI / 2, -Math.PI / 2 + 2 * Math.PI * p); fx.stroke();
+  fx.shadowBlur = 0;
+  return true;
+}
+function drawFlashes(now) {
+  for (let i = flashes.length - 1; i >= 0; i--) {
+    const f = flashes[i], t = now - f.t0;
+    const dur = f.k === 'dot' ? 1000 : f.k === 'back' ? 450 : f.k === 'wipe' ? 380 : 280;
+    if (t >= dur) { flashes.splice(i, 1); continue; }
+    const k = 1 - t / dur;
+    if (f.k === 'ok') {
+      fx.globalCompositeOperation = 'lighter';
+      const gr = fx.createRadialGradient(f.x, f.y, 0, f.x, f.y, 56);
+      gr.addColorStop(0, `rgba(255,255,255,${0.9 * k})`);
+      gr.addColorStop(1, 'rgba(255,255,255,0)');
+      fx.fillStyle = gr;
+      fx.beginPath(); fx.arc(f.x, f.y, 56, 0, 2 * Math.PI); fx.fill();
+      fx.globalCompositeOperation = 'source-over';
+    } else if (f.k === 'back') {
+      fx.strokeStyle = `rgba(60,220,205,${0.7 * k})`; fx.lineWidth = 2;
+      fx.beginPath(); fx.arc(f.x, f.y, 30 + 70 * (1 - k), 0, 2 * Math.PI); fx.stroke();
+    } else if (f.k === 'dot') {
+      fx.globalAlpha = Math.min(1, k * 3.3);
+      fx.shadowColor = f.c; fx.shadowBlur = 14; fx.fillStyle = f.c;
+      fx.beginPath(); fx.arc(f.x, f.y, 9, 0, 2 * Math.PI); fx.fill();
+      fx.shadowBlur = 0; fx.globalAlpha = 1;
+    } else {
+      fx.fillStyle = `rgba(255,255,255,${0.1 * k})`;
+      fx.fillRect(0, 0, innerWidth, innerHeight);
+    }
+  }
+  return flashes.length > 0;
+}
+
+// ---------- pointer routing (one handler set for the whole page) ----------
+function onDown(e) {
+  if (e.target === msgEl) return;                  // the text field keeps its native behaviour
+  e.preventDefault();
+  body.classList.remove('intro');
+  keepAwake();
+  try { body.setPointerCapture(e.pointerId); } catch (_) {}
+  const now = performance.now();
+  if ((mode === 'draw' || mode === 'message') && twoDown(e, now)) return;
+  if (mode === 'buttons') btnDown(e);
+  else if (mode === 'stick') stickDown(e, now);
+  else if (mode === 'draw') drawDown(e, now);
+  else msgDown(e, now);
+}
+function onMove(e) {
+  if (e.pointerId === ignorePid) return;
+  if (tft) twoMove(e);
+  if (mode === 'stick') stickMove(e);
+  else if (mode === 'draw') { drawMove(e); holdMove(e.pointerId, e.clientX, e.clientY); }
+  else holdMove(e.pointerId, e.clientX, e.clientY);
+}
+function onUp(e) {
+  const cancel = e.type === 'pointercancel';
+  btnUp(e.pointerId);
+  if (twoUp(e, cancel)) return;
+  if (e.pointerId === ignorePid) { ignorePid = null; return; }
+  if (mode === 'buttons') holdEnd(e.pointerId);
+  else if (mode === 'stick') { if (g && e.pointerId === g.pid) stickEnd(e.clientX, e.clientY, cancel); }
+  else if (mode === 'draw') drawUp(e, cancel);
+  else msgUp(e, cancel);
+  if (e.pointerType !== 'touch') afterGesture();   // mouse/pen: there is no touchend to wait for
+}
+// Things iOS only allows inside a touchend: opening the keyboard and asking for motion access.
+function afterGesture() {
+  // A tap beside the open field must not move the caret the user placed: only focus a field that isn't focused.
+  if (focusWanted) { focusWanted = false; if (mode === 'message' && document.activeElement !== msgEl) focusMsg(); }
+  if (motionWanted) { motionWanted = false; askMotion(); }
+}
+
+function wire() {
+  document.addEventListener('pointerdown', onDown, { passive: false });
+  document.addEventListener('pointermove', onMove, { passive: false });
+  document.addEventListener('pointerup', onUp);
+  document.addEventListener('pointercancel', onUp);
+  // iOS: only non-passive touch listeners stop scrolling, magnifier and callouts (contextmenu can't).
+  const stop = e => { if (e.target !== msgEl) e.preventDefault(); };
+  document.addEventListener('touchstart', stop, { passive: false });
+  document.addEventListener('touchmove', stop, { passive: false });
+  document.addEventListener('touchend', e => {
+    if (e.touches.length) return;
+    const t = e.changedTouches[0];
+    if (mode === 'stick' && g && !g.ended && t) stickEnd(t.clientX, t.clientY, false);
+    afterGesture();
+  }, { passive: false });
+  document.addEventListener('gesturestart', e => e.preventDefault());
+  document.addEventListener('dblclick', e => e.preventDefault());
+  document.addEventListener('contextmenu', e => { if (e.target !== msgEl) e.preventDefault(); });
+  document.addEventListener('selectstart', e => { if (e.target !== msgEl) e.preventDefault(); });
+
+  msgEl.addEventListener('keydown', e => {
+    if (e.key !== 'Enter' || e.isComposing || e.keyCode === 229) return;
+    e.preventDefault();
+    submitMsg();
+  });
+  msgEl.addEventListener('input', e => { if (e.isComposing) updateCount(); else enforceMax(); });
+  msgEl.addEventListener('compositionend', enforceMax);
+}
+
+// ---------- screen, viewport, wake lock, lifecycle ----------
+function resize() {
+  dpr = Math.min(window.devicePixelRatio || 1, 3);
+  for (const c of [inkCv, fxCv]) { c.width = Math.round(innerWidth * dpr); c.height = Math.round(innerHeight * dpr); }
+  relayout();
+  fitViewport();
+  kick();
+}
+// Keep the field, hint and status inside the part of the screen the keyboard leaves visible.
+function fitViewport() {
+  const vv = window.visualViewport, s = document.documentElement.style;
+  s.setProperty('--vt', (vv ? vv.offsetTop : 0) + 'px');
+  s.setProperty('--vh', (vv ? vv.height : innerHeight) + 'px');
+}
+let lock = null;
+async function keepAwake() {
+  if (lock || document.hidden || !('wakeLock' in navigator)) return;
+  try {
+    lock = await navigator.wakeLock.request('screen');
+    lock.addEventListener('release', () => { lock = null; });
+  } catch (_) { lock = null; }
+}
+function abortGestures() {
+  holdCancel();
+  stopRepeats();
+  if (g && !g.ended) { g.ended = true; hudUp(performance.now()); }
+  if (dg) endStroke(true);
+  mg = null;
+  fingers.clear(); tft = null;
+}
+
+(async () => {
+  window.addEventListener('resize', resize);
+  if (window.visualViewport) {
+    visualViewport.addEventListener('resize', fitViewport);
+    visualViewport.addEventListener('scroll', fitViewport);
+  }
+  resize();
+  const m = /(?:^|[#&])p=([A-Za-z0-9_-]{20,64})~([A-Za-z0-9_-]{43})(?:&|$)/.exec(location.hash);
+  if (!m || !window.isSecureContext || !crypto.subtle) {
+    say(m ? 'Needs https' : 'Not paired');
+    return;
+  }
+  const raw = unb64url(m[2]);
+  if (raw.length !== 32) { raw.fill(0); say('Link damaged'); return; }
+  try {
+    cryptoKey = await crypto.subtle.importKey('raw', raw, { name: 'AES-GCM' }, false, ['encrypt']);
+  } finally { raw.fill(0); }
+  topic = m[1];
+  topicBytes = enc.encode('ghtv/' + topic);
+  wire();
+  setTimeout(() => body.classList.remove('intro'), 3500);
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) { abortGestures(); if (pendingOk) flushOk(); mqClose(); }
+    else { mq.fails = 0; mqConnect(); keepAwake(); }
+  });
+  window.addEventListener('pagehide', () => { abortGestures(); mqClose(); });
+  window.addEventListener('pageshow', () => { if (!document.hidden) mqConnect(); });
+  window.addEventListener('online', () => { mq.fails = 0; if (!mq.ws) mqConnect(); });
+  mqConnect();
+  keepAwake();
+})();
+</script>
+</body>
+</html>
